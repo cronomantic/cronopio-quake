@@ -11,4 +11,19 @@ typedef struct {
     uint16_t port;   /* 16-bit protocol port */
 } IPaddress;
 
+/* Opaque socket/packet types. net_main.c (kept) includes net_socket.h, whose
+ * declarations mention these; the real SDLNet_* functions live only in the
+ * datagram/UDP/socket .c files we don't build (loopback-only). Stub types are
+ * enough for the kept code to compile. */
+typedef void* UDPsocket;
+typedef void* TCPsocket;
+typedef void* SDLNet_SocketSet;
+
+typedef struct {
+    int       channel;
+    uint8_t*  data;
+    int       len, maxlen, status;
+    IPaddress address;
+} UDPpacket;
+
 #endif

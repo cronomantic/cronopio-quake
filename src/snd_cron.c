@@ -7,7 +7,16 @@
 #include "quakedef.h"
 #include "sound.h"
 
-void S_Init(void)     { }
+/* Volume cvars normally defined in snd_dma.c (stubbed out). Kept code reads
+ * these globals (menu sliders) and the named cvars, so define + register them
+ * even though playback is silent. */
+cvar_t bgmvolume = {"bgmvolume", "1", true};
+cvar_t sfxvolume = {"volume", "0.7", true};
+
+void S_Init(void) {
+    Cvar_RegisterVariable(&bgmvolume);
+    Cvar_RegisterVariable(&sfxvolume);
+}
 void S_Shutdown(void) { }
 
 void S_StartSound(i32 entnum, i32 entchannel, sfx_t* sfx, vec3_t origin,

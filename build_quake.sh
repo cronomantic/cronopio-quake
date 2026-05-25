@@ -56,7 +56,7 @@ KEEP=(
   cmd/cmd
   common/com_argv common/com_byte common/com_ext common/com_fs common/com_init
   common/com_link common/com_msg common/com_sizebuf common/com_string
-  common/com_token common/com_va
+  common/com_token common/com_va common/com_stdlib common/com_stdio
   console/console console/cvar
   crc/crc
   host/host host/host_cmd
@@ -65,7 +65,7 @@ KEEP=(
   memory/zone
   menu/menu
   model/model
-  net/net_main net/net_loop
+  net/net_main net/net_loop net/net_poll
   progs/pr_cmds progs/pr_edict progs/pr_exec
   renderer/draw renderer/d_edge renderer/d_fill renderer/d_init renderer/d_modech
   renderer/d_part renderer/d_polyse renderer/d_scan renderer/d_sky renderer/d_sprite
