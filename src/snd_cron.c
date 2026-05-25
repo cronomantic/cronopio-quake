@@ -42,6 +42,15 @@ void S_Update(vec3_t origin, vec3_t v_forward, vec3_t v_right, vec3_t v_up) {
 
 void S_ExtraUpdate(void) { }
 
+/* Background music (CD/track) — silent stubs (real music is M4). */
+i32  BGMusic_Init(void)                          { return 1; }
+void BGMusic_Play(byte track, qboolean looping)  { (void)track; (void)looping; }
+void BGMusic_Stop(void)                          { }
+void BGMusic_Pause(void)                         { }
+void BGMusic_Resume(void)                        { }
+void BGMusic_Shutdown(void)                      { }
+void BGMusic_Update(void)                        { }
+
 sfx_t* S_PrecacheSound(char* sample) { (void)sample; return NULL; }
 void   S_TouchSound(char* sample)    { (void)sample; }
 void   S_BeginPrecaching(void)       { }

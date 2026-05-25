@@ -65,7 +65,7 @@ KEEP=(
   memory/zone
   menu/menu
   model/model
-  net/net_main net/net_loop net/net_poll
+  net/net_main net/net_loop net/net_poll net/net_socket net/net_vcr
   progs/pr_cmds progs/pr_edict progs/pr_exec
   renderer/draw renderer/d_edge renderer/d_fill renderer/d_init renderer/d_modech
   renderer/d_part renderer/d_polyse renderer/d_scan renderer/d_sky renderer/d_sprite
@@ -108,7 +108,11 @@ META_ARGS=()
 ROM_ARGS=()
 [[ -f "$PAK" ]] && ROM_ARGS+=( --rom="$PAK" )
 
+# Quake uses doubles (time, entity parsing), so it's an f64 cart already — pull
+# in the libc's real f64 atof/strtod (guarded off by default to keep f64-free
+# carts like DOOM clean).
 "$CC" \
+  -DCVM_LIBC_ENABLE_F64 \
   "${INCS[@]}" \
   "${SOURCES[@]}" \
   "${PORT[@]}" \
