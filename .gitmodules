@@ -1,0 +1,7 @@
+[submodule "third_party/Cronopio"]
+	path = third_party/Cronopio
+	url = https://github.com/cronomantic/Cronopio.git
+[submodule "third_party/chocolate-quake"]
+	path = third_party/chocolate-quake
+	url = https://github.com/cronomantic/chocolate-quake.git
+	branch = cronopio-port

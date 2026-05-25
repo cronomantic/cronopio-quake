@@ -1,0 +1,15 @@
+# Cronopio SDK build trees (auto-built by build_quake.sh)
+third_party/Cronopio/build/
+third_party/Cronopio/build-*/
+/build/
+/dist/
+tools/*.exe
+
+# Cartridges / engine binaries (large, rebuildable)
+*.bin
+*.crom
+
+# PAK data is not redistributable — keep it out of the repo.
+*.pak
+*.PAK
+id1/
