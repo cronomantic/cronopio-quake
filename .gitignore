@@ -13,3 +13,9 @@ tools/*.exe
 *.pak
 *.PAK
 id1/
+basegame/
+
+# local run artifacts
+*.ppm
+*.png
+*.log

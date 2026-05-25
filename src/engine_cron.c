@@ -46,6 +46,11 @@ int main(void) {
     cron_text("CRONOPIO-QUAKE", 14, (CRON_SCREEN_W - 14 * 8) / 2, 112, 1);
     cron_present();
 
+    /* Serve the baked PAK (cron --rom blob) as ./id1/pak0.pak — the exact path
+     * COM_AddGameDirectory builds from basedir="." + GAMENAME "id1". Quake then
+     * opens it through normal fopen and reads lumps straight from ROM. */
+    cron_rom_mount("./id1/pak0.pak");
+
     quakeparms_t* parms = Sys_Init(1, fake_argv);
     Host_Init(parms);
 

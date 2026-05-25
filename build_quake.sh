@@ -39,7 +39,7 @@ if [[ ! -x "$CC" ]]; then
     echo "[build] ERROR: building Cronopio tools failed." >&2; exit 1; }
 fi
 
-PAK="${1:-$ROOT/id1/pak0.pak}"
+PAK="${1:-$ROOT/basegame/id1/pak0.pak}"
 OUT="${2:-$ROOT/quake.bin}"
 
 # --- include dirs: our compat/src + every chocolate-quake subsystem include --
