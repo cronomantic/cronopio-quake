@@ -19,3 +19,5 @@ basegame/
 *.ppm
 *.png
 *.log
+*.exe
+*.sym
