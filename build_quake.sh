@@ -60,12 +60,12 @@ KEEP=(
   console/console console/cvar
   crc/crc
   host/host host/host_cmd
-  input/in_main input/keys
+  input/keys
   mathlib/mathlib
   memory/zone
   menu/menu
   model/model
-  net/net_main net/net_loop net/net_drivers
+  net/net_main net/net_loop
   progs/pr_cmds progs/pr_edict progs/pr_exec
   renderer/draw renderer/d_edge renderer/d_fill renderer/d_init renderer/d_modech
   renderer/d_part renderer/d_polyse renderer/d_scan renderer/d_sky renderer/d_sprite
