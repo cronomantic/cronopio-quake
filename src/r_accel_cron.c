@@ -16,6 +16,7 @@
 #include "model.h"
 #include "client.h"
 #include "mathlib.h"
+#include "draw.h"
 
 #include <string.h>
 
@@ -501,4 +502,8 @@ void R_AccelDrawing(void) {
 
     cron_clip_reset();   /* restore full-screen clip for the HUD */
     cron_zbuf(0);
+
+    /* persistent on-screen indicator of the active renderer (top-right of the
+     * view, clear of the top-left pickup/notify messages) */
+    Draw_String(g_vx + g_vw - 52, g_vy + 4, "GPU 3D");
 }
