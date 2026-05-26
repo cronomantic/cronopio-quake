@@ -28,6 +28,7 @@ extern i32   r_visframecount;       /* r_local.h */
 extern i32   d_lightstylevalue[256];/* r_shared.h */
 extern byte* host_colormap;         /* host.h: 64*256 light table */
 extern cvar_t r_drawviewmodel;      /* r_main.c */
+extern texture_t* R_TextureAnimation(texture_t* base);   /* r_surf.c */
 
 #define ACCEL_NEAR   4.0f
 #define ACCEL_FAR    8192.0f
@@ -139,11 +140,14 @@ static void accel_build_lightmap(model_t* m, msurface_t* s, int smax, int tmax) 
  * `mvp` (proj*view for the world; proj*view*model for a brush entity). */
 __attribute__((noinline))
 static void accel_surface(model_t* m, msurface_t* s, const cron_mat4* mvp) {
-    texture_t* tex = s->texinfo->texture;
-    if (!tex) return;
-
     int is_sky  = s->flags & SURF_DRAWSKY;
     int is_turb = s->flags & SURF_DRAWTURB;
+
+    /* follow texture animation (flames, lights, teleporters, slipgates …).
+     * Turbulent/sky surfaces don't animate via this path. */
+    texture_t* tex = (is_sky || is_turb) ? s->texinfo->texture
+                                         : R_TextureAnimation(s->texinfo->texture);
+    if (!tex) return;
 
     cron_image(0, (const uint8_t*)tex + tex->offsets[0], (int)tex->width, (int)tex->height);
 
@@ -313,6 +317,7 @@ static void accel_brush(entity_t* ent) {
     model_t* model = ent->model;
     if (!model || model->type != mod_brush) return;
     if (model == cl.worldmodel) return;   /* world goes through accel_node */
+    currententity = ent;                  /* texture animation uses ent->frame */
 
     int rotated = (ent->angles[0] || ent->angles[1] || ent->angles[2]);
     vec3_t fwd, rgt, up;
@@ -493,6 +498,7 @@ void R_AccelDrawing(void) {
 
     accel_setup_view();
     accel_extract_frustum();
+    currententity = &cl_entities[0];   /* R_TextureAnimation reads its frame */
     accel_node(cl.worldmodel->nodes);
 
     /* entities: alias (monsters/items/gibs), brush models (doors/platforms),
