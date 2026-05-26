@@ -42,8 +42,55 @@ echo "[build] syncing Cronopio tools + host with the current VM..."
 ninja -C "$CRBUILD" cronopio-cc cronopio cronopio-headless || {
   echo "[build] ERROR: building Cronopio tools failed." >&2; exit 1; }
 
-PAK="${1:-$ROOT/basegame/id1/pak0.pak}"
 OUT="${2:-$ROOT/quake.crom}"
+
+# --- PAK source ------------------------------------------------------------
+# An explicit PAK arg ($1) is baked as-is. Otherwise auto-discover
+# basegame/id1/pak0.pak, pak1.pak, … (case-insensitive) in load order: a single
+# pak is baked directly; several are MERGED into one (cron_rom is a single blob,
+# so multi-pak = one merged pak served as pak0.pak). Later paks win on duplicate
+# names, matching Quake's search-path precedence. The merge is cached and only
+# rebuilt when an input pak (or pakmerge.c) is newer.
+PAKDIR="$ROOT/basegame/id1"
+if [[ -n "${1:-}" ]]; then
+  PAK="$1"
+else
+  # Discover pak0,pak1,… in load order, stopping at the first gap (as Quake
+  # does). Test the lower- and upper-case spellings explicitly — nullglob is
+  # unreliable under git-bash.
+  DISC=()
+  for i in 0 1 2 3 4 5 6 7 8 9; do
+    f=""
+    for c in "$PAKDIR/pak$i.pak" "$PAKDIR/PAK$i.PAK"; do
+      [[ -f "$c" ]] && { f="$c"; break; }
+    done
+    [[ -z "$f" ]] && break
+    DISC+=( "$f" )
+  done
+
+  if [[ ${#DISC[@]} -le 1 ]]; then
+    PAK="${DISC[0]:-$PAKDIR/pak0.pak}"
+  else
+    HOSTCC="${HOSTCC:-cc}"
+    PAKMERGE="$ROOT/tools/pakmerge.exe"
+    MERGED="$ROOT/build/quake_merged.pak"
+    mkdir -p "$ROOT/build"
+    if [[ ! -x "$PAKMERGE" || "$ROOT/tools/pakmerge.c" -nt "$PAKMERGE" ]]; then
+      echo "[build] compiling tools/pakmerge.c ..."
+      "$HOSTCC" -O2 -o "$PAKMERGE" "$ROOT/tools/pakmerge.c" || {
+        echo "[build] ERROR: could not build pakmerge." >&2; exit 1; }
+    fi
+    need=0
+    [[ -f "$MERGED" ]] || need=1
+    for p in "${DISC[@]}"; do [[ "$p" -nt "$MERGED" ]] && need=1; done
+    if [[ $need -eq 1 ]]; then
+      echo "[build] merging ${#DISC[@]} paks -> $MERGED"
+      "$PAKMERGE" "$MERGED" "${DISC[@]}" || {
+        echo "[build] ERROR: pak merge failed." >&2; exit 1; }
+    fi
+    PAK="$MERGED"
+  fi
+fi
 
 # --- include dirs: our compat/src + every chocolate-quake subsystem include --
 INCS=( -I "$ROOT/compat" -I "$ROOT/src" -I "$SDK/include" -I "$RT" )
