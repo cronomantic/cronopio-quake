@@ -280,7 +280,10 @@ static void accel_alias(entity_t* ent) {
     M.m[12]=0; M.m[13]=0; M.m[14]=0; M.m[15]=1.0f;
     cron_mat_mul(&mvpm, &g_mvp, &M);
 
-    const int mode = CRON_POLY_TEX | CRON_POLY_PERSP | CRON_POLY_ZTEST;
+    /* Affine texturing (NO PERSP), like Quake's software alias renderer: alias
+     * models are small and often very close (the viewmodel), where a
+     * perspective divide on a near-zero w blows the texcoords up into garbage. */
+    const int mode = CRON_POLY_TEX | CRON_POLY_ZTEST;
 
     for (int t = 0; t < pmdl->numtris; t++) {
         mtriangle_t* tri = &tris[t];
@@ -290,8 +293,10 @@ static void accel_alias(entity_t* ent) {
             trivertx_t* tv = &verts[vi];
             cron_vec3 p = cron_v3((float)tv->v[0], (float)tv->v[1], (float)tv->v[2]);
             cron_mat_point(&v[k].pos, &mvpm, p);
-            float s = (float)stv[vi].s;
-            float tt = (float)stv[vi].t;
+            /* stverts are stored Q16.16 (Mod_LoadAliasModel shifts <<16); the
+             * rasteriser wants float texels, so scale back down. */
+            float s  = (float)stv[vi].s * (1.0f / 65536.0f);
+            float tt = (float)stv[vi].t * (1.0f / 65536.0f);
             if (!tri->facesfront && stv[vi].onseam) s += (float)(sw >> 1);
             v[k].u = s; v[k].v = tt; v[k].lu = 0; v[k].lv = 0; v[k].light = 0;
         }
