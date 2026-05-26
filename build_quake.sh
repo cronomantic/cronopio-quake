@@ -98,8 +98,10 @@ for d in "$QS"/*/include; do INCS+=( -I "$d" ); done
 
 # --- upstream engine TUs we keep (subsystem:file ...) -----------------------
 # Platform subsystems (sys, video/vid_*, input/in_{gamepad,keyboard,mouse},
-# sound SDL+codecs, net sockets, main.c) are intentionally NOT here — replaced
-# by src/*_cron.c below.
+# the sound platform layer snd_sdl + the music codecs, net sockets, main.c) are
+# intentionally NOT here — replaced by src/*_cron.c below. NOTE we DO keep
+# Quake's own software mixer (sound/snd_dma+snd_mix+snd_mem); snd_cron.c only
+# replaces the DMA layer, pushing the mixed stream to the host via cron_stream.
 KEEP=(
   camera/chase camera/view
   client/cl_demo client/cl_input client/cl_main client/cl_parse client/cl_tent
@@ -125,6 +127,7 @@ KEEP=(
   renderer/r_sky renderer/r_sprite renderer/r_surf renderer/r_vars
   screen/screen
   server/sv_main server/sv_move server/sv_phys server/sv_user server/sv_world
+  sound/snd_dma sound/snd_mix sound/snd_mem
   status_bar/sbar
   wad/wad
 )
