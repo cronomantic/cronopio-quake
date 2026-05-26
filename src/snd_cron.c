@@ -138,12 +138,48 @@ void SNDDMA_UnblockSound(void) { }
 void S_CodecInit(void)     { }
 void S_CodecShutdown(void) { }
 
-/* Background music (CD-track / ogg) — needs the codecs/CD we dropped. Silent
- * stubs so the engine's BGMusic_* call sites link. */
-i32  BGMusic_Init(void)                          { return 1; }
-void BGMusic_Play(byte track, qboolean looping)  { (void)track; (void)looping; }
-void BGMusic_Stop(void)                          { }
-void BGMusic_Pause(void)                         { }
-void BGMusic_Resume(void)                        { }
-void BGMusic_Shutdown(void)                      { }
-void BGMusic_Update(void)                        { }
+/* Background music. Quake's soundtrack is recorded audio (CD tracks); modern
+ * data ships it as music/track%02d.ogg. We read the requested track straight
+ * from the cart's pak/ROM and hand the ogg bytes to the host, which decodes and
+ * streams it (cron_music). No music in the pak -> silent, no error. */
+
+static int   s_track;        /* current track number, 0 = none */
+
+static void bgm_load(int track, int looping) {
+    char name[64];
+    if (track < 2) {            /* track 1 is the data track — never music */
+        cron_music_stop();
+        s_track = 0;
+        return;
+    }
+    snprintf(name, sizeof(name), "music/track%02d.ogg", track);
+    byte* data = COM_LoadTempFile(name);   /* NULL if absent; host copies bytes */
+    if (!data) {
+        cron_music_stop();
+        s_track = 0;
+        return;
+    }
+    cron_music(data, com_filesize, looping ? 1 : 0);
+    cron_music_volume((int)(bgmvolume.value * 256.0f));
+    s_track = track;
+}
+
+i32  BGMusic_Init(void) { return 1; }
+
+void BGMusic_Play(byte track, qboolean looping) { bgm_load((int)track, looping); }
+
+void BGMusic_Stop(void) { cron_music_stop(); s_track = 0; }
+
+/* Pause/Resume fire on menu/console toggles; keep the music playing under them
+ * (no host-side pause yet — tracking position would need a new syscall). */
+void BGMusic_Pause(void)  { }
+void BGMusic_Resume(void) { }
+
+void BGMusic_Shutdown(void) { cron_music_stop(); }
+
+/* Push the menu's bgmvolume slider to the host each tick (cheap). */
+void BGMusic_Update(void) {
+    if (s_track) {
+        cron_music_volume((int)(bgmvolume.value * 256.0f));
+    }
+}

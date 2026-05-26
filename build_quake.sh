@@ -46,35 +46,67 @@ OUT="${2:-$ROOT/quake.crom}"
 
 # --- PAK source ------------------------------------------------------------
 # An explicit PAK arg ($1) is baked as-is. Otherwise auto-discover
-# basegame/id1/pak0.pak, pak1.pak, … (case-insensitive) in load order: a single
-# pak is baked directly; several are MERGED into one (cron_rom is a single blob,
-# so multi-pak = one merged pak served as pak0.pak). Later paks win on duplicate
-# names, matching Quake's search-path precedence. The merge is cached and only
-# rebuilt when an input pak (or pakmerge.c) is newer.
+# basegame/id1/pak0.pak, pak1.pak, … (case-insensitive) in load order, plus a
+# pak built from any basegame/id1/music/*.ogg soundtrack. A single pak is baked
+# directly; several are MERGED into one (cron_rom is a single blob, so multi-pak
+# = one merged pak served as pak0.pak). Later paks win on duplicate names,
+# matching Quake's search-path precedence. Tools (pakmerge/pakbuild) are
+# compiled on first use; outputs are cached and rebuilt only when an input is
+# newer. NOTE: music plays through the host OGG decoder (cron_music); drop
+# track02.ogg … track11.ogg under basegame/id1/music/ to include the soundtrack.
 PAKDIR="$ROOT/basegame/id1"
+HOSTCC="${HOSTCC:-cc}"
+mkdir -p "$ROOT/build"
 if [[ -n "${1:-}" ]]; then
   PAK="$1"
 else
   # Discover pak0,pak1,… in load order, stopping at the first gap (as Quake
   # does). Test the lower- and upper-case spellings explicitly — nullglob is
   # unreliable under git-bash.
-  DISC=()
+  PAKS=()
   for i in 0 1 2 3 4 5 6 7 8 9; do
     f=""
     for c in "$PAKDIR/pak$i.pak" "$PAKDIR/PAK$i.PAK"; do
       [[ -f "$c" ]] && { f="$c"; break; }
     done
     [[ -z "$f" ]] && break
-    DISC+=( "$f" )
+    PAKS+=( "$f" )
   done
 
-  if [[ ${#DISC[@]} -le 1 ]]; then
-    PAK="${DISC[0]:-$PAKDIR/pak0.pak}"
+  # Pack the soundtrack (basegame/id1/music/*.ogg) into its own pak, to be
+  # merged like any other. (Skipped silently when there are no oggs.)
+  MUSIC=()
+  for f in "$PAKDIR"/music/*.ogg "$PAKDIR"/music/*.OGG; do
+    [[ -f "$f" ]] && MUSIC+=( "$f" )
+  done
+  if [[ ${#MUSIC[@]} -gt 0 ]]; then
+    PAKBUILD="$ROOT/tools/pakbuild.exe"
+    MUSICPAK="$ROOT/build/quake_music.pak"
+    if [[ ! -x "$PAKBUILD" || "$ROOT/tools/pakbuild.c" -nt "$PAKBUILD" ]]; then
+      echo "[build] compiling tools/pakbuild.c ..."
+      "$HOSTCC" -O2 -o "$PAKBUILD" "$ROOT/tools/pakbuild.c" || {
+        echo "[build] ERROR: could not build pakbuild." >&2; exit 1; }
+    fi
+    need=0
+    [[ -f "$MUSICPAK" ]] || need=1
+    # The music dir's mtime changes when a track is added/removed; check it too,
+    # since a freshly-copied track may keep an OLD mtime (so a per-file -nt test
+    # alone would miss it) — this avoids a stale music pak.
+    [[ "$PAKDIR/music" -nt "$MUSICPAK" ]] && need=1
+    for m in "${MUSIC[@]}"; do [[ "$m" -nt "$MUSICPAK" ]] && need=1; done
+    if [[ $need -eq 1 ]]; then
+      echo "[build] packing ${#MUSIC[@]} music track(s) -> $MUSICPAK"
+      "$PAKBUILD" "$MUSICPAK" "$PAKDIR" "${MUSIC[@]}" || {
+        echo "[build] ERROR: music pack failed." >&2; exit 1; }
+    fi
+    PAKS+=( "$MUSICPAK" )
+  fi
+
+  if [[ ${#PAKS[@]} -le 1 ]]; then
+    PAK="${PAKS[0]:-$PAKDIR/pak0.pak}"
   else
-    HOSTCC="${HOSTCC:-cc}"
     PAKMERGE="$ROOT/tools/pakmerge.exe"
     MERGED="$ROOT/build/quake_merged.pak"
-    mkdir -p "$ROOT/build"
     if [[ ! -x "$PAKMERGE" || "$ROOT/tools/pakmerge.c" -nt "$PAKMERGE" ]]; then
       echo "[build] compiling tools/pakmerge.c ..."
       "$HOSTCC" -O2 -o "$PAKMERGE" "$ROOT/tools/pakmerge.c" || {
@@ -82,10 +114,11 @@ else
     fi
     need=0
     [[ -f "$MERGED" ]] || need=1
-    for p in "${DISC[@]}"; do [[ "$p" -nt "$MERGED" ]] && need=1; done
+    for p in "${PAKS[@]}"; do [[ "$p" -nt "$MERGED" ]] && need=1; done
+    [[ "$ROOT/tools/pakmerge.c" -nt "$MERGED" ]] && need=1
     if [[ $need -eq 1 ]]; then
-      echo "[build] merging ${#DISC[@]} paks -> $MERGED"
-      "$PAKMERGE" "$MERGED" "${DISC[@]}" || {
+      echo "[build] merging ${#PAKS[@]} paks -> $MERGED"
+      "$PAKMERGE" "$MERGED" "${PAKS[@]}" || {
         echo "[build] ERROR: pak merge failed." >&2; exit 1; }
     fi
     PAK="$MERGED"
