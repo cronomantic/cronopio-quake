@@ -223,7 +223,10 @@ static void accel_alias(entity_t* ent) {
     model_t* model = ent->model;
     if (!model || model->type != mod_alias) return;
 
-    aliashdr_t* ph   = (aliashdr_t*)Mod_Extradata(model);
+    /* cached data directly (see accel_sprite): avoid Mod_Extradata's Cache_Check
+     * LRU walk, which can trap on a transient model in accelerated mode. */
+    aliashdr_t* ph = (aliashdr_t*)model->cache.data;
+    if (!ph) return;
     mdl_t*      pmdl = (mdl_t*)((byte*)ph + ph->model);
 
     int frame = ent->frame;
@@ -347,7 +350,12 @@ __attribute__((noinline))
 static void accel_sprite(entity_t* ent) {
     model_t* model = ent->model;
     if (!model || model->type != mod_sprite) return;
-    msprite_t* ps = (msprite_t*)Mod_Extradata(model);
+    /* Read the cached sprite directly, exactly like the software R_DrawSprite.
+     * NOT Mod_Extradata: its Cache_Check walks the cache LRU, which traps on a
+     * transient sprite (e.g. s_explod.spr) whose cache entry isn't kept warm by
+     * the software pipeline in accelerated mode. */
+    msprite_t* ps = (msprite_t*)model->cache.data;
+    if (!ps) return;
 
     int frame = ent->frame;
     if (frame < 0 || frame >= ps->numframes) frame = 0;
@@ -482,8 +490,8 @@ void R_AccelDrawing(void) {
     accel_extract_frustum();
     accel_node(cl.worldmodel->nodes);
 
-    /* entities: alias (monsters/items/gibs) and brush models (doors/platforms).
-     * Each helper ignores models of the wrong type; sprites are a later phase. */
+    /* entities: alias (monsters/items/gibs), brush models (doors/platforms),
+     * sprites (explosions/flames). Each helper ignores the wrong model type. */
     for (int i = 0; i < cl_numvisedicts; i++) {
         entity_t* e = cl_visedicts[i];
         if (!e->model) continue;
