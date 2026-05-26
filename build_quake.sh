@@ -177,6 +177,7 @@ PORT=(
   "$ROOT/src/sys_cron.c"        # time, args, exit, file IO over libc RAM-FS
   "$ROOT/src/vid_cron.c"        # software framebuffer -> cron_fb + palette
   "$ROOT/src/in_cron.c"         # 12-button pad -> Quake commands
+  "$ROOT/src/r_accel_cron.c"    # accelerated 3D path (cron_polys); r_accel toggles it
   "$ROOT/src/snd_cron.c"        # SFX via cron_pcm (codecs dropped)
   "$ROOT/src/net_stub_cron.c"   # single-player: net_loop kept, rest stubbed
   "$SDK/lib/cvm_libc.c"

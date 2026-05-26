@@ -23,7 +23,6 @@ viddef_t vid;   // global video state
 #define VID_W CRON_SCREEN_W   // 320
 #define VID_H CRON_SCREEN_H   // 240
 
-static byte     vid_screen[VID_W * VID_H];   // the paletted draw buffer
 static byte     vid_palette[256 * 3];        // last palette set by the engine
 static qboolean palette_dirty;
 static qboolean vid_initialized;
@@ -77,7 +76,11 @@ void VID_Init(const byte* palette) {
     vid.numpages = 1;
     vid.recalc_refdef = true;
     vid.colormap = host_colormap;
-    vid.buffer = vid_screen;
+    /* Draw straight into the host framebuffer (single page): the software
+     * renderer and the accelerated cron_polys path then share ONE buffer, so
+     * the 3D scene and the 2D HUD compose without a copy or a color-key.
+     * VID_Update just flushes the palette and presents. */
+    vid.buffer = (byte*)CRON_FB;
 
     VID_AllocBuffers();
     VID_SetPalette(palette);
@@ -97,12 +100,7 @@ void VID_Update(vrect_t* rects) {
     if (palette_dirty) {
         VID_FlushPalette();
     }
-    /* vid.buffer is 320x240 indices; CRON_FB is the same size. */
-    volatile uint8_t* fb = CRON_FB;
-    const byte* src = vid.buffer;
-    for (i32 i = 0; i < VID_W * VID_H; i++) {
-        fb[i] = src[i];
-    }
+    /* vid.buffer aliases CRON_FB — nothing to copy; just present. */
     cron_present();
 }
 
