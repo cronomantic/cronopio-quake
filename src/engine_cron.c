@@ -28,6 +28,9 @@ static void quake_frame(void) {
     g_old_time = new_time;
 }
 
+/* Defined in in_cron.c — installs the pad key bindings after the configs run. */
+extern void IN_Cron_InstallBinds(void);
+
 /* We own argc/argv (no command line on a cartridge). */
 static char* fake_argv[] = {(char*)"quake"};
 
@@ -53,6 +56,10 @@ int main(void) {
 
     quakeparms_t* parms = Sys_Init(1, fake_argv);
     Host_Init(parms);
+
+    /* Install the 12-button pad layout. Queued after Host_Init's
+     * `exec quake.rc`, so it overrides the shipped binds. */
+    IN_Cron_InstallBinds();
 
     g_old_time = Sys_FloatTime();
     cron_set_frame(quake_frame);

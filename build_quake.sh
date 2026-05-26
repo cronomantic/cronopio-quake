@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Build the Cronopio Quake cartridge (Chocolate Quake -> CronoVM .bin).
+# Build the Cronopio Quake cartridge (Chocolate Quake -> Cronopio .crom).
 #
-# Multi-file build: cvm-cc compiles every .c to bitcode, llvm-links them, then
-# cvm-translate lowers to quake.bin. The PAK is baked into ROM via --rom.
+# Multi-file build: cronopio-cc compiles every .c to bitcode, llvm-links them,
+# translates, and seals the result into quake.crom (magic + crc + metadata —
+# the host launcher only lists sealed .crom carts). The PAK is baked into ROM
+# via --rom.
 #
 # Mirrors cronopio-doom/build_doom.sh. The KEEP lists below are the upstream
 # engine TUs we compile as-is; the platform subsystems (sys/vid/in/snd/net) are
@@ -27,20 +29,21 @@ RT="$CRONOPIO/external/CronoVM/runtime/lib"
 CRBUILD="$CRONOPIO/build"
 CC="$CRBUILD/tools/cronopio-cc/cronopio-cc.exe"
 
-# The cart compiler is a built artifact; auto-build the SDK tools (and the host
-# binaries used to run the cart) if it's missing.
-if [[ ! -x "$CC" ]]; then
-  echo "[build] cronopio-cc not found — building Cronopio SDK tools (one-time)..."
-  if [[ ! -f "$CRBUILD/build.ninja" ]]; then
-    cmake -S "$CRONOPIO" -B "$CRBUILD" -G Ninja || {
-      echo "[build] ERROR: cmake configure of Cronopio failed." >&2; exit 1; }
-  fi
-  ninja -C "$CRBUILD" cronopio-cc cronopio cronopio-headless || {
-    echo "[build] ERROR: building Cronopio tools failed." >&2; exit 1; }
+# The cart compiler + the host/headless are built artifacts. ALWAYS run an
+# incremental ninja build (a no-op when nothing changed, ~instant) so the host
+# and headless track the current CronoVM — a stale host links an older VM and
+# traps "unknown opcode" on a freshly-built cart (the launch hang we hit once).
+if [[ ! -f "$CRBUILD/build.ninja" ]]; then
+  echo "[build] configuring Cronopio SDK (one-time)..."
+  cmake -S "$CRONOPIO" -B "$CRBUILD" -G Ninja || {
+    echo "[build] ERROR: cmake configure of Cronopio failed." >&2; exit 1; }
 fi
+echo "[build] syncing Cronopio tools + host with the current VM..."
+ninja -C "$CRBUILD" cronopio-cc cronopio cronopio-headless || {
+  echo "[build] ERROR: building Cronopio tools failed." >&2; exit 1; }
 
 PAK="${1:-$ROOT/basegame/id1/pak0.pak}"
-OUT="${2:-$ROOT/quake.bin}"
+OUT="${2:-$ROOT/quake.crom}"
 
 # --- include dirs: our compat/src + every chocolate-quake subsystem include --
 INCS=( -I "$ROOT/compat" -I "$ROOT/src" -I "$SDK/include" -I "$RT" )

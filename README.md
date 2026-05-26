@@ -41,8 +41,8 @@ status_bar, wad.
 ## Build / run
 
 ```
-bash build_quake.sh [PAK] [out.bin]    # → quake.bin (cvm-cc links the TUs)
-third_party/Cronopio/build/host/desktop/cronopio.exe quake.bin
+bash build_quake.sh [PAK] [out.crom]   # → quake.crom (cronopio-cc links + seals the cart)
+third_party/Cronopio/build/host/desktop/cronopio.exe quake.crom
 ```
 
 `build_quake.sh` resolves the repo root from its own path, inits the Cronopio
@@ -50,7 +50,7 @@ submodule if missing, and auto-builds the SDK tools on first run (CMake+Ninja+cl
 
 ## Milestones
 
-- **M0** Scaffold: submodules, build script, platform-seam stubs → `quake.bin` compiles.
+- **M0** Scaffold: submodules, build script, platform-seam stubs → `quake.crom` compiles.
 - **M1** Boot to the Quake console/menu on the Cronopio framebuffer (PAK in ROM, file IO over RAM-FS).
 - **M2** Software renderer to the framebuffer (BSP world; look around). Float-heavy → drives CronoVM perf work.
 - **M3** Input (12-button pad) + game loop + console/menu nav.

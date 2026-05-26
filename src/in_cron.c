@@ -6,6 +6,20 @@
  * physical keyboard/controller onto it). We translate the pad into Quake key
  * edges; there is no mouse, so IN_Move is empty.
  *
+ * The pad maps onto the engine's dedicated gamepad keys (K_ABUTTON, K_LSHOULDER,
+ * …) for the face/shoulder buttons and onto the arrow keys for the d-pad, then
+ * IN_Cron_InstallBinds() binds those keys to the movement/weapon commands so the
+ * layout is deterministic regardless of what default.cfg shipped. In a menu/
+ * console (key_dest != key_game) the pad posts the literal nav keys the menu
+ * code reads directly (arrows / ENTER / ESCAPE), bypassing the binds.
+ *
+ *   d-pad        move forward/back, turn left/right
+ *   A / B        attack / jump
+ *   X / Y        previous / next weapon
+ *   L / R        strafe left / right
+ *   START        menu (ESC)
+ *   SELECT       console
+ *
  * IN_Cron_Poll() is called from Sys_SendKeyEvents() once per frame: it reads
  * the pad and posts one Key_Event edge per Quake key that changed. The
  * SDL-specific IN_*Event entry points exist only to satisfy input.h and are
@@ -15,6 +29,7 @@
 #include "input.h"
 #include "keys.h"
 #include "client.h"
+#include "cmd.h"
 
 #include <string.h>
 
@@ -43,6 +58,29 @@ void IN_ShowMouse(void)       { }
 void IN_HideMouse(void)       { }
 void IN_ClearStates(void)     { }
 
+/* ---- bindings ---------------------------------------------------------- */
+
+/* Install the pad layout. Queued via Cbuf_AddText AFTER Host_Init's
+ * `exec quake.rc` (which is Cbuf_InsertText'd to the front), so these run once
+ * the shipped configs are done and win. Movement speeds are set to the run
+ * values so the pad plays always-run (no +speed button to spare). */
+void IN_Cron_InstallBinds(void) {
+    Cbuf_AddText(
+        "bind UPARROW +forward\n"
+        "bind DOWNARROW +back\n"
+        "bind LEFTARROW +left\n"
+        "bind RIGHTARROW +right\n"
+        "bind ABUTTON +attack\n"
+        "bind BBUTTON +jump\n"
+        "bind XBUTTON \"impulse 12\"\n"   /* previous weapon */
+        "bind YBUTTON \"impulse 10\"\n"   /* next weapon     */
+        "bind LSHOULDER +moveleft\n"
+        "bind RSHOULDER +moveright\n"
+        "cl_forwardspeed 400\n"
+        "cl_backspeed 400\n"
+        "cl_sidespeed 400\n");
+}
+
 /* ---- pad -> Quake keys ------------------------------------------------- */
 
 typedef struct {
@@ -50,26 +88,27 @@ typedef struct {
     int      key;   /* Quake key in play */
 } padmap_t;
 
-/* In-game: the d-pad drives movement/turn (vanilla default.cfg binds the
- * arrows to +forward/+back/+left/+right), A=attack, B=jump, START=menu,
- * SELECT=console. Weapon/strafe refinement comes in M3. */
+/* In-game: face/shoulder buttons map to the engine's gamepad keys (bound by
+ * IN_Cron_InstallBinds); the d-pad turns/moves; START opens the menu, SELECT
+ * the console. */
 static const padmap_t map_game[] = {
     {CRON_BTN_UP,     K_UPARROW},
     {CRON_BTN_DOWN,   K_DOWNARROW},
     {CRON_BTN_LEFT,   K_LEFTARROW},
     {CRON_BTN_RIGHT,  K_RIGHTARROW},
-    {CRON_BTN_A,      K_CTRL},      /* +attack */
-    {CRON_BTN_B,      K_SPACE},     /* +jump   */
-    {CRON_BTN_X,      '/'},         /* (unbound yet) */
-    {CRON_BTN_Y,      '.'},
-    {CRON_BTN_L,      ','},
-    {CRON_BTN_R,      '/'},
+    {CRON_BTN_A,      K_ABUTTON},     /* +attack    */
+    {CRON_BTN_B,      K_BBUTTON},     /* +jump      */
+    {CRON_BTN_X,      K_XBUTTON},     /* prev weapon */
+    {CRON_BTN_Y,      K_YBUTTON},     /* next weapon */
+    {CRON_BTN_L,      K_LSHOULDER},   /* strafe left  */
+    {CRON_BTN_R,      K_RSHOULDER},   /* strafe right */
     {CRON_BTN_START,  K_ESCAPE},
-    {CRON_BTN_SELECT, '`'},         /* toggle console */
+    {CRON_BTN_SELECT, '`'},           /* toggle console */
 };
 
 /* Menu/console: A confirms, B/START cancel; the d-pad navigates; SELECT still
- * toggles the console. */
+ * toggles the console. These keys are read by the menu code directly, so they
+ * work without the in-game binds. */
 static const padmap_t map_menu[] = {
     {CRON_BTN_UP,     K_UPARROW},
     {CRON_BTN_DOWN,   K_DOWNARROW},
