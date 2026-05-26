@@ -35,6 +35,7 @@ extern cvar_t r_drawviewmodel;      /* r_main.c */
 static cron_mat4   g_mvp;
 static int         g_vx, g_vy, g_vw, g_vh;   /* viewport rect */
 static vec3_t      g_vright, g_vup;          /* view basis (for camera-facing sprites) */
+static float       g_frustum[6][4];          /* world-space frustum planes (a,b,c,d) */
 
 static int32_t     g_zbuffer[CRON_SCREEN_W * CRON_SCREEN_H];
 static byte        g_lmgrid[18 * 18];        /* per-surface light rows (0..63) */
@@ -58,6 +59,32 @@ static void accel_setup_view(void) {
     float fovy   = r_refdef.fov_y * (CRON_PI / 180.0f);
     cron_mat_perspective(&proj, fovy, aspect, ACCEL_NEAR, ACCEL_FAR);
     cron_mat_mul(&g_mvp, &proj, &view);
+}
+
+/* Extract the 6 world-space frustum planes from the combined MVP (rows of a
+ * row-major matrix; inside = a*x+b*y+c*z+d >= 0). */
+static void accel_extract_frustum(void) {
+    const float* m = g_mvp.m;
+    /* left/right/bottom/top/near/far = row3 ± row{0,1,2} */
+    static const int rowi[6] = { 0, 0, 1, 1, 2, 2 };
+    static const float sgn[6] = { 1, -1, 1, -1, 1, -1 };
+    for (int p = 0; p < 6; p++) {
+        int r = rowi[p]; float s = sgn[p];
+        for (int k = 0; k < 4; k++)
+            g_frustum[p][k] = m[12 + k] + s * m[r*4 + k];
+    }
+}
+
+/* True if a node's i16 AABB is fully outside any frustum plane. */
+static int accel_node_culled(mnode_t* node) {
+    for (int p = 0; p < 6; p++) {
+        float* f = g_frustum[p];
+        float px = (f[0] >= 0.0f) ? (float)node->minmaxs[3] : (float)node->minmaxs[0];
+        float py = (f[1] >= 0.0f) ? (float)node->minmaxs[4] : (float)node->minmaxs[1];
+        float pz = (f[2] >= 0.0f) ? (float)node->minmaxs[5] : (float)node->minmaxs[2];
+        if (f[0]*px + f[1]*py + f[2]*pz + f[3] < 0.0f) return 1;
+    }
+    return 0;
 }
 
 /* Perspective-divide a clipped vertex and map to the view RECT (not the whole
@@ -401,6 +428,7 @@ __attribute__((noinline))
 static void accel_node(mnode_t* node) {
     if (node->contents == CONTENTS_SOLID) return;
     if (node->visframe != r_visframecount) return;
+    if (accel_node_culled(node)) return;   /* frustum cull this subtree */
 
     if (node->contents < 0) {   /* leaf: mark its surfaces visible */
         mleaf_t* leaf = (mleaf_t*)node;
@@ -450,6 +478,7 @@ void R_AccelDrawing(void) {
     cron_clip(g_vx, g_vy, g_vw, g_vh);
 
     accel_setup_view();
+    accel_extract_frustum();
     accel_node(cl.worldmodel->nodes);
 
     /* entities: alias (monsters/items/gibs) and brush models (doors/platforms).
