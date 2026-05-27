@@ -366,6 +366,14 @@ static void accel_alias(entity_t* ent) {
     int sw = pmdl->skinwidth, sh = pmdl->skinheight;
     cron_image(0, skin, sw, sh);
 
+    /* A Quake .mdl skin unwraps the model into part of the sheet and fills the
+     * rest with a single "background" index (the corner texel skin[0], often a
+     * bright blue). Silhouette triangles can sample that filler — software's
+     * exact texcoords stay inside the model, but the accel rasteriser grazes it,
+     * giving a bright-blue rim. Colour-key the filler out so those pixels keep
+     * the world behind the gun instead. */
+    int aliaskey = skin[0];
+
     /* model->world matrix (entity rotation/translation), with the .mdl
      * byte-vertex scale + origin folded in so we feed raw verts. Columns of
      * the rotation are Quake's forward / -right / up. */
@@ -458,7 +466,7 @@ static void accel_alias(entity_t* ent) {
         }
         int n = cron_clip_near(v, clipped);
         for (int j = 0; j < n; j++) accel_to_screen(&g_batch[j], &clipped[j]);
-        if (n) cron_polys(mode, g_batch, n, 0, -1);
+        if (n) cron_polys(mode, g_batch, n, 0, aliaskey);
     }
 }
 
@@ -549,7 +557,7 @@ static void accel_sprite(entity_t* ent) {
                             o[2] + g_vright[2]*ox[k] + g_vup[2]*oy[k]);
     }
 
-    const int mode = CRON_POLY_TEX | CRON_POLY_PERSP | CRON_POLY_ZTEST;
+    const int mode = CRON_POLY_TEX | CRON_POLY_ZTEST;
     int idx[6] = { 0, 1, 2, 0, 2, 3 };
     cron_cvert v[3], clipped[6];
     for (int t = 0; t < 6; t += 3) {
