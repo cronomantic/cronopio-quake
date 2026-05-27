@@ -186,11 +186,13 @@ PORT=(
 echo "[build] $(( ${#SOURCES[@]} + ${#PORT[@]} )) translation units -> $OUT"
 echo "[build] PAK: $PAK"
 
-# Optional cartridge metadata (CVM_SEC_META): the host launcher shows these.
-META_ARGS=()
-[[ -n "${CART_TITLE:-}"    ]] && META_ARGS+=( --title="$CART_TITLE" )
-[[ -n "${CART_AUTHOR:-}"   ]] && META_ARGS+=( --author="$CART_AUTHOR" )
-[[ -n "${CART_CONTROLS:-}" ]] && META_ARGS+=( --controls="$CART_CONTROLS" )
+# Cartridge metadata (CVM_SEC_META): the host launcher shows these without
+# running the cart. Defaults baked in so the browser shows more than bare
+# "quake"; override via the CART_* env vars.
+CART_TITLE="${CART_TITLE:-Quake}"
+CART_AUTHOR="${CART_AUTHOR:-id Software (Cronopio port)}"
+CART_CONTROLS="${CART_CONTROLS:-D-pad: move/turn  L/R: strafe  A: fire  B: jump  X/Y: weapon  START: menu  SELECT: console}"
+META_ARGS=( --title="$CART_TITLE" --author="$CART_AUTHOR" --controls="$CART_CONTROLS" )
 
 ROM_ARGS=()
 [[ -f "$PAK" ]] && ROM_ARGS+=( --rom="$PAK" )

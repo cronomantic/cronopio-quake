@@ -43,6 +43,15 @@ static int32_t     g_zbuffer[CRON_SCREEN_W * CRON_SCREEN_H];
 static byte        g_lmgrid[18 * 18];        /* per-surface light rows (0..63) */
 static cron_vert_t g_batch[6];               /* one (clipped) triangle = up to 6 */
 
+/* Sky split into two 128x128 layers (a Quake sky texture is 256x128: the left
+ * half is the solid background, the right half the masked cloud overlay with
+ * index 0 transparent). Cached per sky texture; rebuilt when it changes. */
+static byte  g_skyback[128 * 128];
+static byte  g_skyfront[128 * 128];
+static byte  g_skytile[128 * 128];           /* per-frame composite of the two */
+static void* g_sky_built_for;
+static int   g_skytile_frame = -1;
+
 /* ---- view matrix from r_refdef ---------------------------------------- */
 
 static void accel_setup_view(void) {
@@ -105,6 +114,44 @@ static void accel_to_screen(cron_vert_t* o, const cron_cvert* cv) {
     o->lv = cvm_f2i_sat_s(cv->lv * 65536.0f);
 }
 
+/* Add dynamic lights into the surface block-light accumulator, mirroring the
+ * software R_AddDynamicLights (r_surf.c). Writes into bl[t*smax+s] in the same
+ * 8.8 space as the static lightmaps, before the bound/invert/shift below. */
+__attribute__((noinline))
+static void accel_add_dlights(msurface_t* surf, int* bl, int smax, int tmax) {
+    mtexinfo_t* tex = surf->texinfo;
+    for (int lnum = 0; lnum < MAX_DLIGHTS; lnum++) {
+        if (!(surf->dlightbits & (1 << lnum))) continue;   /* not lit by this */
+
+        float rad  = cl_dlights[lnum].radius;
+        float dist = DotProduct(cl_dlights[lnum].origin, surf->plane->normal)
+                   - surf->plane->dist;
+        rad -= (dist < 0.0f) ? -dist : dist;
+        float minlight = cl_dlights[lnum].minlight;
+        if (rad < minlight) continue;
+        minlight = rad - minlight;
+
+        vec3_t impact;
+        for (int i = 0; i < 3; i++)
+            impact[i] = cl_dlights[lnum].origin[i] - surf->plane->normal[i]*dist;
+
+        float l0 = DotProduct(impact, tex->vecs[0]) + tex->vecs[0][3]
+                 - (float)surf->texturemins[0];
+        float l1 = DotProduct(impact, tex->vecs[1]) + tex->vecs[1][3]
+                 - (float)surf->texturemins[1];
+
+        for (int t = 0; t < tmax; t++) {
+            int td = (int)(l1 - t * 16); if (td < 0) td = -td;
+            for (int s = 0; s < smax; s++) {
+                int sd = (int)(l0 - s * 16); if (sd < 0) sd = -sd;
+                int d = (sd > td) ? (sd + (td >> 1)) : (td + (sd >> 1));
+                if (d < minlight)
+                    bl[t*smax + s] += (int)((rad - d) * 256.0f);
+            }
+        }
+    }
+}
+
 /* Build the per-surface light grid (colormap rows) the way R_BuildLightMap
  * does, but one byte per lumel instead of per texel. */
 __attribute__((noinline))
@@ -127,6 +174,11 @@ static void accel_build_lightmap(model_t* m, msurface_t* s, int smax, int tmax) 
         lightmap += size;
     }
 
+    /* dynamic lights (muzzle flashes, explosions, …) — mirrors the software
+     * R_AddDynamicLights so accel walls flash like the edge/span pipeline. */
+    if (s->dlightframe == r_framecount)
+        accel_add_dlights(s, bl, smax, tmax);
+
     for (int i = 0; i < size; i++) {
         int t = (255 * 256 - bl[i]) >> 2;   /* 8 - VID_CBITS(6) */
         if (t < 64) t = 64;
@@ -134,6 +186,43 @@ static void accel_build_lightmap(model_t* m, msurface_t* s, int smax, int tmax) 
         if (row > 63) row = 63;
         g_lmgrid[i] = (byte)row;
     }
+}
+
+/* Two-layer sky (GLQuake/software style). A Quake sky texture is 256x128: the
+ * LEFT half is the foreground layer (index 0 = transparent holes), the RIGHT
+ * half the background shown through them. We split it once per texture, then
+ * each frame composite the two at different scroll speeds into g_skytile —
+ * exactly what the software R_MakeSky does — and draw the sky as ONE opaque
+ * textured layer (single pass = no z-fighting between layers). */
+__attribute__((noinline))
+static int accel_sky_prepare(texture_t* tex) {
+    if ((int)tex->width < 256 || (int)tex->height < 128) return 0;   /* not a 256x128 sky */
+
+    if ((void*)tex != g_sky_built_for) {
+        const byte* src = (const byte*)tex + tex->offsets[0];
+        int tw = (int)tex->width;
+        for (int i = 0; i < 128; i++)
+            for (int j = 0; j < 128; j++) {
+                g_skyfront[i*128 + j] = src[i*tw + j];          /* holes = 0 */
+                g_skyback [i*128 + j] = src[i*tw + j + 128];    /* background */
+            }
+        g_sky_built_for = (void*)tex;
+        g_skytile_frame = -1;
+    }
+
+    if (g_skytile_frame != r_framecount) {
+        int bs = (int)(cl.time * 3.0f);    /* background: slow scroll */
+        int fs = (int)(cl.time * 6.0f);    /* foreground clouds: faster */
+        for (int y = 0; y < 128; y++) {
+            int byo = ((y + bs) & 127) * 128, fyo = ((y + fs) & 127) * 128;
+            for (int x = 0; x < 128; x++) {
+                byte f = g_skyfront[fyo + ((x + fs) & 127)];
+                g_skytile[y*128 + x] = f ? f : g_skyback[byo + ((x + bs) & 127)];
+            }
+        }
+        g_skytile_frame = r_framecount;
+    }
+    return 1;
 }
 
 /* Emit one surface (world or brush model) as a triangle fan, transformed by
@@ -149,14 +238,22 @@ static void accel_surface(model_t* m, msurface_t* s, const cron_mat4* mvp) {
                                          : R_TextureAnimation(s->texinfo->texture);
     if (!tex) return;
 
-    cron_image(0, (const uint8_t*)tex + tex->offsets[0], (int)tex->width, (int)tex->height);
-
     int mode;
     if (is_sky || is_turb) {
         /* sky and water/lava are fullbright (no lightmap); identity cmap. */
         cron_cmap(0);
         mode = CRON_POLY_TEX | CRON_POLY_PERSP | CRON_POLY_ZTEST;
+        if (is_sky && accel_sky_prepare(tex)) {
+            /* draw the pre-composited, pre-scrolled two-layer tile */
+            cron_image(0, g_skytile, 128, 128);
+        } else {
+            cron_image(0, (const uint8_t*)tex + tex->offsets[0], (int)tex->width, (int)tex->height);
+            /* water/lava ripple (host warps texcoords per-pixel, like the
+             * software D_DrawTurbulent). */
+            if (is_turb) mode |= CRON_POLY_TURB;
+        }
     } else {
+        cron_image(0, (const uint8_t*)tex + tex->offsets[0], (int)tex->width, (int)tex->height);
         int smax = (s->extents[0] >> 4) + 1;
         int tmax = (s->extents[1] >> 4) + 1;
         if (smax > 18) smax = 18;
@@ -165,10 +262,6 @@ static void accel_surface(model_t* m, msurface_t* s, const cron_mat4* mvp) {
         cron_lightmap(g_lmgrid, smax, tmax);
         mode = CRON_POLY_TEX | CRON_POLY_LIGHTMAP | CRON_POLY_PERSP | CRON_POLY_ZTEST;
     }
-
-    /* sky scroll (GLQuake-style): texcoords from the view direction. */
-    float skyscroll = (float)cl.time * 8.0f;
-    skyscroll -= (float)((int)(skyscroll * (1.0f/128.0f))) * 128.0f;
 
     /* gather polygon verts + per-vertex attrs */
     cron_vec3  P[MAXSURFVERTS];
@@ -192,8 +285,10 @@ static void accel_surface(model_t* m, msurface_t* s, const cron_mat4* mvp) {
             float d2 = (pos[2] - r_refdef.vieworg[2]) * 3.0f;
             float len = cvm_fsqrt(d0*d0 + d1*d1 + d2*d2);
             len = (len > 0.0001f) ? (6.0f * 63.0f / len) : 0.0f;
-            A[i].u = skyscroll + d0 * len;
-            A[i].v = skyscroll + d1 * len;
+            /* scroll is baked into g_skytile (two-layer composite); here we
+             * only project the view direction onto the tile. */
+            A[i].u = d0 * len;
+            A[i].v = d1 * len;
             A[i].lu = A[i].lv = 0.0f;
         } else {
             float ss = pos[0]*vs[0] + pos[1]*vs[1] + pos[2]*vs[2] + vs[3];
@@ -286,8 +381,10 @@ static void accel_alias(entity_t* ent) {
 
     /* Affine texturing (NO PERSP), like Quake's software alias renderer: alias
      * models are small and often very close (the viewmodel), where a
-     * perspective divide on a near-zero w blows the texcoords up into garbage. */
-    const int mode = CRON_POLY_TEX | CRON_POLY_ZTEST;
+     * perspective divide on a near-zero w blows the texcoords up into garbage.
+     * CLAMP texcoords: alias skins are a single sheet, so a texel past the edge
+     * must clamp to the border, not wrap to the opposite (blue) edge. */
+    const int mode = CRON_POLY_TEX | CRON_POLY_ZTEST | CRON_POLY_CLAMP;
 
     for (int t = 0; t < pmdl->numtris; t++) {
         mtriangle_t* tri = &tris[t];
@@ -415,6 +512,7 @@ static void accel_sprite(entity_t* ent) {
 /* ---- particles -------------------------------------------------------- */
 
 extern particle_t* active_particles;
+extern void R_UpdateParticles(void);   /* r_part.c — age/expire/advance */
 
 __attribute__((noinline))
 static void accel_particles(void) {
@@ -439,6 +537,9 @@ static void accel_particles(void) {
         }
         cron_polys(CRON_POLY_FLAT | CRON_POLY_ZTEST, g_batch, 6, (int)p->color, -1);
     }
+    /* Software R_DrawParticles ages + expires particles; the accel path draws
+     * them itself, so run the same bookkeeping here or they'd live forever. */
+    R_UpdateParticles();
 }
 
 /* BSP walk: PVS cull (node->visframe), mark visible leaf surfaces, render
@@ -495,6 +596,10 @@ void R_AccelDrawing(void) {
     cron_zclear(0x7FFFFFFF);
     cron_colormap(host_colormap, 64);
     cron_clip(g_vx, g_vy, g_vw, g_vh);
+
+    /* water/lava turbulence phase (Quake: SPEED=20, CYCLE=128, AMP=8 texels);
+     * advanced by cl.time so CRON_POLY_TURB surfaces ripple over time. */
+    cron_turb((int)(cl.time * 20.0f) & 127, 8);
 
     accel_setup_view();
     accel_extract_frustum();
