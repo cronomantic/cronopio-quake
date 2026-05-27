@@ -665,10 +665,15 @@ void R_AccelDrawing(void) {
     /* particles (blood, sparks, explosions) */
     accel_particles();
 
-    /* the weapon viewmodel, drawn last (on top) */
+    /* the weapon viewmodel, drawn last (on top). Depth-hack like GLQuake: clear
+     * the z-buffer first so the gun draws over the whole world and is never
+     * clipped by a nearby wall (it still self-occludes against the fresh
+     * buffer). Mirrors the software renderer's 3x ziscale for cl.viewent. */
     if (r_drawviewmodel.value && cl.viewent.model && !(cl.items & IT_INVISIBILITY)
-        && cl.stats[STAT_HEALTH] > 0)
+        && cl.stats[STAT_HEALTH] > 0) {
+        cron_zclear(0x7FFFFFFF);
         accel_alias(&cl.viewent);
+    }
 
     cron_clip_reset();   /* restore full-screen clip for the HUD */
     cron_zbuf(0);
