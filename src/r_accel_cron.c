@@ -115,7 +115,7 @@ static void accel_to_screen(cron_vert_t* o, const cron_cvert* cv) {
     o->u = cvm_f2i_sat_s(cv->u * 65536.0f);
     o->v = cvm_f2i_sat_s(cv->v * 65536.0f);
     o->w = cvm_f2i_sat_s(cv->pos.w * 65536.0f);
-    o->c = 0;
+    o->c = cvm_f2i_sat_s(cv->light);   /* gouraud light row (alias); 0 elsewhere */
     o->lu = cvm_f2i_sat_s(cv->lu * 65536.0f);
     o->lv = cvm_f2i_sat_s(cv->lv * 65536.0f);
 }
@@ -327,6 +327,12 @@ static void accel_surface(model_t* m, msurface_t* s, const cron_mat4* mvp) {
 /* ---- alias models (monsters / items / weapon) ------------------------- */
 
 extern i32 R_LightPoint(vec3_t p);   /* r_light.h */
+extern float r_avertexnormals[162][3];   /* r_alias.c — the 162 anorms */
+
+/* Quake alias lighting constants (file-local #defines in r_alias.c). */
+#define ALIAS_LIGHT_MIN  5
+#define ALIAS_VID_CBITS  6
+#define ALIAS_VID_GRADES (1 << ALIAS_VID_CBITS)   /* 64 */
 
 __attribute__((noinline))
 static void accel_alias(entity_t* ent) {
@@ -360,12 +366,6 @@ static void accel_alias(entity_t* ent) {
     int sw = pmdl->skinwidth, sh = pmdl->skinheight;
     cron_image(0, skin, sw, sh);
 
-    /* flat per-model light -> a colormap row (no per-texel lightmap here) */
-    int light = R_LightPoint(ent->origin);
-    int row = (255 - light) >> 2;
-    if (row < 0) row = 0; if (row > 63) row = 63;
-    cron_cmap(host_colormap + row * 256);
-
     /* model->world matrix (entity rotation/translation), with the .mdl
      * byte-vertex scale + origin folded in so we feed raw verts. Columns of
      * the rotation are Quake's forward / -right / up. */
@@ -390,13 +390,44 @@ static void accel_alias(entity_t* ent) {
     M.m[12]=0; M.m[13]=0; M.m[14]=0; M.m[15]=1.0f;
     cron_mat_mul(&mvpm, &g_mvp, &M);
 
+    /* Per-vertex lighting, mirroring R_DrawAliasModel + R_AliasSetupLighting:
+     * ambient/shade from R_LightPoint + dynamic lights, then each vertex gets
+     * ambient + shade*dot(normal, lightvec) mapped to a colormap row, fed to
+     * the host as a Gouraud light (CRON_POLY_GOURAUD on the textured tris). */
+    float ambient = (float)R_LightPoint(ent->origin);
+    float shade   = ambient;
+    for (int lnum = 0; lnum < MAX_DLIGHTS; lnum++) {
+        if (cl_dlights[lnum].die >= cl.time) {
+            float dx = ent->origin[0] - cl_dlights[lnum].origin[0];
+            float dy = ent->origin[1] - cl_dlights[lnum].origin[1];
+            float dz = ent->origin[2] - cl_dlights[lnum].origin[2];
+            float add = cl_dlights[lnum].radius - cvm_fsqrt(dx*dx + dy*dy + dz*dz);
+            if (add > 0.0f) ambient += add;
+        }
+    }
+    if (ambient > 128.0f) ambient = 128.0f;
+    if (ambient + shade > 192.0f) shade = 192.0f - ambient;
+
+    float r_amb = (ambient < ALIAS_LIGHT_MIN) ? ALIAS_LIGHT_MIN : ambient;
+    r_amb = (255.0f - r_amb) * (float)(1 << ALIAS_VID_CBITS);
+    if (r_amb < ALIAS_LIGHT_MIN) r_amb = ALIAS_LIGHT_MIN;
+    float r_shade = (shade < 0.0f) ? 0.0f : shade;
+    r_shade *= (float)ALIAS_VID_GRADES;
+
+    /* light vector {-1,0,0} rotated into the model frame (fwd/rgt/up are the
+     * model basis == software's alias_forward/right/up); dot(lv,X) = -X[0]. */
+    float plv[3] = { -fwd[0], rgt[0], -up[0] };
+
     /* Perspective-correct texturing: with the Q16.16 stverts now scaled back to
      * float texels (below), perspective no longer overflows, and affine's
      * screen-space interpolation across the close viewmodel's big triangles was
      * mis-sampling skin texels — the scattered "blue specks" on weapons.
      * CLAMP texcoords: alias skins are a single sheet, so a texel past the edge
-     * must clamp to the border, not wrap to the opposite (blue) edge. */
-    const int mode = CRON_POLY_TEX | CRON_POLY_PERSP | CRON_POLY_ZTEST | CRON_POLY_CLAMP;
+     * must clamp to the border, not wrap to the opposite (blue) edge.
+     * GOURAUD: per-vertex light row through the bound colormap (host_colormap,
+     * set in R_AccelDrawing) — smooth shading instead of one flat per-model row. */
+    const int mode = CRON_POLY_TEX | CRON_POLY_PERSP | CRON_POLY_ZTEST
+                   | CRON_POLY_CLAMP | CRON_POLY_GOURAUD;
 
     for (int t = 0; t < pmdl->numtris; t++) {
         mtriangle_t* tri = &tris[t];
@@ -411,7 +442,19 @@ static void accel_alias(entity_t* ent) {
             float s  = (float)stv[vi].s * (1.0f / 65536.0f);
             float tt = (float)stv[vi].t * (1.0f / 65536.0f);
             if (!tri->facesfront && stv[vi].onseam) s += (float)(sw >> 1);
-            v[k].u = s; v[k].v = tt; v[k].lu = 0; v[k].lv = 0; v[k].light = 0;
+
+            /* per-vertex light row from the vertex normal (see above) */
+            float* pn = r_avertexnormals[tv->lightnormalindex];
+            float lightcos = pn[0]*plv[0] + pn[1]*plv[1] + pn[2]*plv[2];
+            float temp = r_amb;
+            if (lightcos < 0.0f) {
+                temp += r_shade * lightcos;
+                if (temp < 0.0f) temp = 0.0f;
+            }
+            int row = ((int)temp) >> 8;
+            if (row < 0) row = 0; else if (row > 63) row = 63;
+
+            v[k].u = s; v[k].v = tt; v[k].lu = 0; v[k].lv = 0; v[k].light = (float)row;
         }
         int n = cron_clip_near(v, clipped);
         for (int j = 0; j < n; j++) accel_to_screen(&g_batch[j], &clipped[j]);
