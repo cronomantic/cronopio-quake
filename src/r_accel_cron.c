@@ -159,7 +159,11 @@ static void accel_build_lightmap(model_t* m, msurface_t* s, int smax, int tmax) 
     int size = smax * tmax;
     byte* lightmap = s->samples;
 
-    if (!m->lightdata || !lightmap) {
+    /* Only a world WITHOUT light data is fullbright. A surface that merely has
+     * no samples (lightmap==NULL) still gets the ambient floor below and ends
+     * up dark — mirroring software R_BuildLightMap. (Treating no-samples as
+     * fullbright lit those surfaces — metal/special textures — far too bright.) */
+    if (!m->lightdata) {
         memset(g_lmgrid, 0, (size_t)size);   /* row 0 = brightest */
         return;
     }
@@ -168,11 +172,12 @@ static void accel_build_lightmap(model_t* m, msurface_t* s, int smax, int tmax) 
     int base = r_refdef.ambientlight << 8;
     for (int i = 0; i < size; i++) bl[i] = base;
 
-    for (int maps = 0; maps < MAXLIGHTMAPS && s->styles[maps] != 255; maps++) {
-        int scale = d_lightstylevalue[s->styles[maps]];
-        for (int i = 0; i < size; i++) bl[i] += lightmap[i] * scale;
-        lightmap += size;
-    }
+    if (lightmap)
+        for (int maps = 0; maps < MAXLIGHTMAPS && s->styles[maps] != 255; maps++) {
+            int scale = d_lightstylevalue[s->styles[maps]];
+            for (int i = 0; i < size; i++) bl[i] += lightmap[i] * scale;
+            lightmap += size;
+        }
 
     /* dynamic lights (muzzle flashes, explosions, …) — mirrors the software
      * R_AddDynamicLights so accel walls flash like the edge/span pipeline. */
@@ -379,12 +384,13 @@ static void accel_alias(entity_t* ent) {
     M.m[12]=0; M.m[13]=0; M.m[14]=0; M.m[15]=1.0f;
     cron_mat_mul(&mvpm, &g_mvp, &M);
 
-    /* Affine texturing (NO PERSP), like Quake's software alias renderer: alias
-     * models are small and often very close (the viewmodel), where a
-     * perspective divide on a near-zero w blows the texcoords up into garbage.
+    /* Perspective-correct texturing: with the Q16.16 stverts now scaled back to
+     * float texels (below), perspective no longer overflows, and affine's
+     * screen-space interpolation across the close viewmodel's big triangles was
+     * mis-sampling skin texels — the scattered "blue specks" on weapons.
      * CLAMP texcoords: alias skins are a single sheet, so a texel past the edge
      * must clamp to the border, not wrap to the opposite (blue) edge. */
-    const int mode = CRON_POLY_TEX | CRON_POLY_ZTEST | CRON_POLY_CLAMP;
+    const int mode = CRON_POLY_TEX | CRON_POLY_PERSP | CRON_POLY_ZTEST | CRON_POLY_CLAMP;
 
     for (int t = 0; t < pmdl->numtris; t++) {
         mtriangle_t* tri = &tris[t];
