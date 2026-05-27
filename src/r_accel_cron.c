@@ -52,6 +52,12 @@ static byte  g_skytile[128 * 128];           /* per-frame composite of the two *
 static void* g_sky_built_for;
 static int   g_skytile_frame = -1;
 
+/* Underwater screen warp: a copy of the rendered view, resampled back with a
+ * sine displacement (see accel_warp_view), the accel equivalent of the
+ * software D_WarpScreen (which warps an offscreen buffer; accel renders
+ * straight to the FB, so we copy then warp in place). */
+static byte  g_warpsrc[CRON_SCREEN_W * CRON_SCREEN_H];
+
 /* ---- view matrix from r_refdef ---------------------------------------- */
 
 static void accel_setup_view(void) {
@@ -548,6 +554,40 @@ static void accel_particles(void) {
     R_UpdateParticles();
 }
 
+/* ---- underwater screen warp ------------------------------------------- */
+
+extern i32   intsintable[];   /* r_shared.h — sine table, range [0, 2*AMP2] */
+
+/* The accel equivalent of D_WarpScreen: the software renderer warps an
+ * offscreen buffer into the framebuffer; we render straight to the FB, so copy
+ * the view rect out and resample it back with the same sine displacement. Only
+ * run underwater. Mirrors d_scan.c: dest[v][u] = src[rowofs[v+turb[u]]]
+ * [col[turb[v]+u]], with a slight compression so the offset never reads past
+ * the edge. */
+__attribute__((noinline))
+static void accel_warp_view(void) {
+    int w = g_vw, h = g_vh;
+    if (w <= AMP2*2 || h <= AMP2*2) return;
+
+    for (int v = 0; v < h; v++)
+        memcpy(g_warpsrc + (size_t)v*w,
+               (const void*)(vid.buffer + (size_t)(g_vy+v)*vid.width + g_vx), (size_t)w);
+
+    static int col[CRON_SCREEN_W + AMP2*2];
+    static int rowo[CRON_SCREEN_H + AMP2*2];
+    for (int u = 0; u < w + AMP2*2; u++) col[u]  = (int)((float)u * w / (w + AMP2*2));
+    for (int v = 0; v < h + AMP2*2; v++) rowo[v] = (int)((float)v * h / (h + AMP2*2));
+
+    i32* turb = intsintable + ((i32)(cl.time * SPEED) & (CYCLE - 1));
+
+    for (int v = 0; v < h; v++) {
+        volatile uint8_t* dest = vid.buffer + (size_t)(g_vy+v)*vid.width + g_vx;
+        int* colp = &col[turb[v]];
+        for (int u = 0; u < w; u++)
+            dest[u] = g_warpsrc[(size_t)rowo[v + turb[u]]*w + colp[u]];
+    }
+}
+
 /* BSP walk: PVS cull (node->visframe), mark visible leaf surfaces, render
  * front-facing marked surfaces — mirrors R_RecursiveWorldNode. */
 __attribute__((noinline))
@@ -632,6 +672,16 @@ void R_AccelDrawing(void) {
 
     cron_clip_reset();   /* restore full-screen clip for the HUD */
     cron_zbuf(0);
+
+    /* underwater screen warp (the software path's D_WarpScreen; we forced
+     * r_dowarp off so the view stays full-size, then warp it here ourselves).
+     * Gated on the view leaf being in a liquid + the r_waterwarp cvar. */
+    {
+        extern mleaf_t* r_viewleaf;
+        extern cvar_t   r_waterwarp;
+        if (r_waterwarp.value && r_viewleaf && r_viewleaf->contents <= CONTENTS_WATER)
+            accel_warp_view();
+    }
 
     /* persistent on-screen indicator of the active renderer (top-right of the
      * view, clear of the top-left pickup/notify messages) */
