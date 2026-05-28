@@ -45,6 +45,14 @@ static int32_t     g_zbuffer[CRON_SCREEN_W * CRON_SCREEN_H];
 static byte        g_lmgrid[LM_GRID_MAX];    /* fallback grid (brush ents, OOM cache) */
 static cron_vert_t g_batch[6];               /* one (clipped) triangle = up to 6 */
 
+/* Alias batch: world-space verts for one model fed in a single cron_xform_polys
+ * call. Each .mdl triangle emits 3 verts; vanilla Quake's biggest models stay
+ * well under 1024 tris (shambler ~600, player ~300), so 4096 verts is generous.
+ * Anything larger is clipped to the budget — the cart would have run out of
+ * frame time long before that anyway. */
+#define ALIAS_BATCH_MAX  4096
+static cron_wvert_t g_alias_batch[ALIAS_BATCH_MAX];
+
 /* Per-world lightmap cache: one 18*18 grid per world surface + a key. Most
  * surfaces don't change frame-to-frame (no dlights, steady lightstyles), so we
  * skip both accel_build_lightmap and accel_add_dlights on a cache hit. */
@@ -471,6 +479,9 @@ static void accel_alias(entity_t* ent) {
     }
     M.m[12]=0; M.m[13]=0; M.m[14]=0; M.m[15]=1.0f;
     cron_mat_mul(&mvpm, &g_mvp, &M);
+    /* Host-side T&L: bind this entity's MVP (with the .mdl scale + origin
+     * folded into M) so cron_xform_polys can transform the raw byte verts. */
+    cron_mvp(mvpm.m);
 
     /* Per-vertex lighting, mirroring R_DrawAliasModel + R_AliasSetupLighting:
      * ambient/shade from R_LightPoint + dynamic lights, then each vertex gets
@@ -511,14 +522,19 @@ static void accel_alias(entity_t* ent) {
     const int mode = CRON_POLY_TEX | CRON_POLY_PERSP | CRON_POLY_ZTEST
                    | CRON_POLY_CLAMP | CRON_POLY_GOURAUD;
 
-    for (int t = 0; t < pmdl->numtris; t++) {
+    /* Build the whole model into one wvert batch — bytes scaled to floats,
+     * stverts unpacked, Gouraud light row computed per vertex — and submit
+     * via the host T&L primitive. Way fewer syscalls than the per-tri path
+     * and the per-vertex matrix multiply / clip / project moves to native C. */
+    int ntri = pmdl->numtris;
+    int max_tri = ALIAS_BATCH_MAX / 3;
+    if (ntri > max_tri) ntri = max_tri;
+    int bn = 0;
+    for (int t = 0; t < ntri; t++) {
         mtriangle_t* tri = &tris[t];
-        cron_cvert v[3], clipped[6];
         for (int k = 0; k < 3; k++) {
             int vi = tri->vertindex[k];
             trivertx_t* tv = &verts[vi];
-            cron_vec3 p = cron_v3((float)tv->v[0], (float)tv->v[1], (float)tv->v[2]);
-            cron_mat_point(&v[k].pos, &mvpm, p);
             /* stverts are stored Q16.16 (Mod_LoadAliasModel shifts <<16); the
              * rasteriser wants float texels, so scale back down. */
             float s  = (float)stv[vi].s * (1.0f / 65536.0f);
@@ -536,12 +552,13 @@ static void accel_alias(entity_t* ent) {
             int row = ((int)temp) >> 8;
             if (row < 0) row = 0; else if (row > 63) row = 63;
 
-            v[k].u = s; v[k].v = tt; v[k].lu = 0; v[k].lv = 0; v[k].light = (float)row;
+            cron_wvert_t* w = &g_alias_batch[bn++];
+            w->x = (float)tv->v[0]; w->y = (float)tv->v[1]; w->z = (float)tv->v[2];
+            w->u = s; w->v = tt; w->lu = 0; w->lv = 0; w->light = (float)row;
         }
-        int n = cron_clip_near(v, clipped);
-        for (int j = 0; j < n; j++) accel_to_screen(&g_batch[j], &clipped[j]);
-        if (n) cron_polys(mode, g_batch, n, 0, aliaskey);
     }
+    if (bn) cron_xform_polys(mode, g_alias_batch, bn, 0, aliaskey);
+    cron_mvp(g_mvp.m);   /* restore world MVP for downstream calls */
 }
 
 /* ---- brush-model entities (doors, platforms, ammo boxes) -------------- */
