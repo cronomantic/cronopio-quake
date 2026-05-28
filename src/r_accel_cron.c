@@ -19,6 +19,7 @@
 #include "draw.h"
 
 #include <string.h>
+#include <stdlib.h>
 
 #include <cronopio.h>
 #include <cronopio3d.h>
@@ -40,8 +41,17 @@ static vec3_t      g_vright, g_vup;          /* view basis (for camera-facing sp
 static float       g_frustum[6][4];          /* world-space frustum planes (a,b,c,d) */
 
 static int32_t     g_zbuffer[CRON_SCREEN_W * CRON_SCREEN_H];
-static byte        g_lmgrid[18 * 18];        /* per-surface light rows (0..63) */
+#define LM_GRID_MAX  (18 * 18)
+static byte        g_lmgrid[LM_GRID_MAX];    /* fallback grid (brush ents, OOM cache) */
 static cron_vert_t g_batch[6];               /* one (clipped) triangle = up to 6 */
+
+/* Per-world lightmap cache: one 18*18 grid per world surface + a key. Most
+ * surfaces don't change frame-to-frame (no dlights, steady lightstyles), so we
+ * skip both accel_build_lightmap and accel_add_dlights on a cache hit. */
+static byte*       g_lm_cache_data;          /* numsurfaces * LM_GRID_MAX bytes */
+static uint32_t*   g_lm_cache_keys;          /* numsurfaces ints; 0xFFFFFFFF = invalid */
+static int         g_lm_cache_n;
+static model_t*    g_lm_cache_for;
 
 /* Sky split into two 128x128 layers (a Quake sky texture is 256x128: the left
  * half is the solid background, the right half the masked cloud overlay with
@@ -159,9 +169,11 @@ static void accel_add_dlights(msurface_t* surf, int* bl, int smax, int tmax) {
 }
 
 /* Build the per-surface light grid (colormap rows) the way R_BuildLightMap
- * does, but one byte per lumel instead of per texel. */
+ * does, but one byte per lumel instead of per texel. Writes to `out` so the
+ * caller can target either a per-surface cache slot or the fallback g_lmgrid. */
 __attribute__((noinline))
-static void accel_build_lightmap(model_t* m, msurface_t* s, int smax, int tmax) {
+static void accel_build_lightmap(model_t* m, msurface_t* s, int smax, int tmax,
+                                 byte* out) {
     int size = smax * tmax;
     byte* lightmap = s->samples;
 
@@ -170,7 +182,7 @@ static void accel_build_lightmap(model_t* m, msurface_t* s, int smax, int tmax) 
      * up dark — mirroring software R_BuildLightMap. (Treating no-samples as
      * fullbright lit those surfaces — metal/special textures — far too bright.) */
     if (!m->lightdata) {
-        memset(g_lmgrid, 0, (size_t)size);   /* row 0 = brightest */
+        memset(out, 0, (size_t)size);   /* row 0 = brightest */
         return;
     }
 
@@ -195,8 +207,46 @@ static void accel_build_lightmap(model_t* m, msurface_t* s, int smax, int tmax) 
         if (t < 64) t = 64;
         int row = t >> 8;
         if (row > 63) row = 63;
-        g_lmgrid[i] = (byte)row;
+        out[i] = (byte)row;
     }
+}
+
+/* Compute a key that changes whenever the surface's lightmap would differ from
+ * the previous build: r_refdef.ambientlight (the per-leaf base, shared by all
+ * surfaces this frame) + the active lightstyle values + (if dlit this frame)
+ * the frame number, since each dlight frame is unique (radii/positions move).
+ * Sentinel 0xFFFFFFFF collisions are harmless — a different neighbour key
+ * will trigger the next rebuild anyway. */
+static uint32_t lm_key(msurface_t* s) {
+    uint32_t k = 0x9E3779B9u + (uint32_t)r_refdef.ambientlight;
+    for (int m = 0; m < MAXLIGHTMAPS && s->styles[m] != 255; m++)
+        k = k * 31u + (uint32_t)d_lightstylevalue[s->styles[m]];
+    if (s->dlightframe == r_framecount)
+        k = k * 31u + (uint32_t)(r_framecount + 1);   /* +1 so it never matches "no dlight" */
+    return k;
+}
+
+/* Allocate / reset the per-surface lightmap cache when the world changes. */
+static void lm_cache_ensure(model_t* world) {
+    if (g_lm_cache_for == world && g_lm_cache_data) return;
+    free(g_lm_cache_data);
+    free(g_lm_cache_keys);
+    g_lm_cache_data = NULL;
+    g_lm_cache_keys = NULL;
+    g_lm_cache_n = 0;
+    g_lm_cache_for = world;
+    if (!world) return;
+    int n = world->numsurfaces;
+    if (n <= 0) return;
+    g_lm_cache_data = (byte*)malloc((size_t)n * LM_GRID_MAX);
+    g_lm_cache_keys = (uint32_t*)malloc((size_t)n * sizeof(uint32_t));
+    if (!g_lm_cache_data || !g_lm_cache_keys) {
+        free(g_lm_cache_data); free(g_lm_cache_keys);
+        g_lm_cache_data = NULL; g_lm_cache_keys = NULL;
+        return;   /* fall back to no-cache path */
+    }
+    g_lm_cache_n = n;
+    for (int i = 0; i < n; i++) g_lm_cache_keys[i] = 0xFFFFFFFFu;
 }
 
 /* Two-layer sky (GLQuake/software style). A Quake sky texture is 256x128: the
@@ -269,8 +319,27 @@ static void accel_surface(model_t* m, msurface_t* s, const cron_mat4* mvp) {
         int tmax = (s->extents[1] >> 4) + 1;
         if (smax > 18) smax = 18;
         if (tmax > 18) tmax = 18;
-        accel_build_lightmap(m, s, smax, tmax);
-        cron_lightmap(g_lmgrid, smax, tmax);
+        /* World surfaces go through the per-surface cache: skip the rebuild
+         * (and accel_add_dlights) when the styles + dlight state match the
+         * previous frame. Brush ents (doors/platforms) fall through to the
+         * always-rebuild path — far fewer surfaces, and they often move. */
+        byte* grid = g_lmgrid;
+        if (m == g_lm_cache_for && g_lm_cache_data) {
+            int idx = (int)(s - m->surfaces);
+            if (idx >= 0 && idx < g_lm_cache_n) {
+                grid = g_lm_cache_data + (size_t)idx * LM_GRID_MAX;
+                uint32_t key = lm_key(s);
+                if (g_lm_cache_keys[idx] != key) {
+                    accel_build_lightmap(m, s, smax, tmax, grid);
+                    g_lm_cache_keys[idx] = key;
+                }
+            } else {
+                accel_build_lightmap(m, s, smax, tmax, grid);
+            }
+        } else {
+            accel_build_lightmap(m, s, smax, tmax, grid);
+        }
+        cron_lightmap(grid, smax, tmax);
         mode = CRON_POLY_TEX | CRON_POLY_LIGHTMAP | CRON_POLY_PERSP | CRON_POLY_ZTEST;
     }
 
@@ -684,6 +753,9 @@ void R_AccelDrawing(void) {
     g_vh = r_refdef.vrect.height;
     if (g_vw <= 0 || g_vh <= 0 || !cl.worldmodel) return;
 
+    /* Reset the per-surface lightmap cache when the world changes. */
+    lm_cache_ensure(cl.worldmodel);
+
     /* Clear only the view rect (HUD owns the rest). */
     for (int y = 0; y < g_vh; y++)
         memset(vid.buffer + (size_t)(g_vy + y) * vid.width + g_vx, 0, (size_t)g_vw);
@@ -738,8 +810,4 @@ void R_AccelDrawing(void) {
         if (r_waterwarp.value && r_viewleaf && r_viewleaf->contents <= CONTENTS_WATER)
             accel_warp_view();
     }
-
-    /* persistent on-screen indicator of the active renderer (top-right of the
-     * view, clear of the top-left pickup/notify messages) */
-    Draw_String(g_vx + g_vw - 52, g_vy + 4, "GPU 3D");
 }
