@@ -287,9 +287,11 @@ static int accel_sky_prepare(texture_t* tex) {
 }
 
 /* Emit one surface (world or brush model) as a triangle fan, transformed by
- * `mvp` (proj*view for the world; proj*view*model for a brush entity). */
+ * the currently bound MVP (the caller binds it once with cron_mvp before
+ * iterating surfaces — g_mvp for the world, the entity-specific matrix for
+ * brush models). The host does transform + near-clip + project natively. */
 __attribute__((noinline))
-static void accel_surface(model_t* m, msurface_t* s, const cron_mat4* mvp) {
+static void accel_surface(model_t* m, msurface_t* s) {
     int is_sky  = s->flags & SURF_DRAWSKY;
     int is_turb = s->flags & SURF_DRAWTURB;
 
@@ -343,9 +345,11 @@ static void accel_surface(model_t* m, msurface_t* s, const cron_mat4* mvp) {
         mode = CRON_POLY_TEX | CRON_POLY_LIGHTMAP | CRON_POLY_PERSP | CRON_POLY_ZTEST;
     }
 
-    /* gather polygon verts + per-vertex attrs */
-    cron_vec3  P[MAXSURFVERTS];
-    cron_cvert A[MAXSURFVERTS];
+    /* gather polygon verts as world-space cron_wvert_t — the host transforms
+     * + near-clips + projects natively (cron_xform_polys) instead of doing
+     * those per-vertex calls in the VM. The cart's only per-vertex work is
+     * the surface-plane texcoord projection. */
+    cron_wvert_t W[MAXSURFVERTS];
     int nv = s->numedges;
     if (nv > MAXSURFVERTS) nv = MAXSURFVERTS;
 
@@ -357,7 +361,7 @@ static void accel_surface(model_t* m, msurface_t* s, const cron_mat4* mvp) {
         mvertex_t* mv = (e >= 0) ? &m->vertexes[m->edges[e].v[0]]
                                  : &m->vertexes[m->edges[-e].v[1]];
         float* pos = mv->position;
-        P[i] = cron_v3(pos[0], pos[1], pos[2]);
+        W[i].x = pos[0]; W[i].y = pos[1]; W[i].z = pos[2];
 
         if (is_sky) {
             float d0 = pos[0] - r_refdef.vieworg[0];
@@ -367,30 +371,31 @@ static void accel_surface(model_t* m, msurface_t* s, const cron_mat4* mvp) {
             len = (len > 0.0001f) ? (6.0f * 63.0f / len) : 0.0f;
             /* scroll is baked into g_skytile (two-layer composite); here we
              * only project the view direction onto the tile. */
-            A[i].u = d0 * len;
-            A[i].v = d1 * len;
-            A[i].lu = A[i].lv = 0.0f;
+            W[i].u = d0 * len;
+            W[i].v = d1 * len;
+            W[i].lu = W[i].lv = 0.0f;
         } else {
             float ss = pos[0]*vs[0] + pos[1]*vs[1] + pos[2]*vs[2] + vs[3];
             float tt = pos[0]*vt[0] + pos[1]*vt[1] + pos[2]*vt[2] + vt[3];
-            A[i].u  = ss;
-            A[i].v  = tt;
-            A[i].lu = (ss - (float)s->texturemins[0]) * (1.0f / 16.0f);
-            A[i].lv = (tt - (float)s->texturemins[1]) * (1.0f / 16.0f);
+            W[i].u  = ss;
+            W[i].v  = tt;
+            W[i].lu = (ss - (float)s->texturemins[0]) * (1.0f / 16.0f);
+            W[i].lv = (tt - (float)s->texturemins[1]) * (1.0f / 16.0f);
         }
-        A[i].light = 0;
+        W[i].light = 0.0f;
     }
 
-    /* fan: (0, i, i+1). Transform + near-clip + project each, then submit. */
+    /* Submit the whole fan as one xform_polys batch (3*(nv-2) world verts
+     * laid out tri-by-tri). The MVP must already be bound by the caller —
+     * accel_node + accel_brush each cron_mvp once before recursing. */
+    cron_wvert_t batch[MAXSURFVERTS * 3];
+    int bn = 0;
     for (int i = 1; i < nv - 1; i++) {
-        cron_cvert tri[3], clipped[6];
-        cron_mat_point(&tri[0].pos, mvp, P[0]);   tri[0].u=A[0].u;   tri[0].v=A[0].v;   tri[0].lu=A[0].lu;   tri[0].lv=A[0].lv;   tri[0].light=0;
-        cron_mat_point(&tri[1].pos, mvp, P[i]);   tri[1].u=A[i].u;   tri[1].v=A[i].v;   tri[1].lu=A[i].lu;   tri[1].lv=A[i].lv;   tri[1].light=0;
-        cron_mat_point(&tri[2].pos, mvp, P[i+1]); tri[2].u=A[i+1].u; tri[2].v=A[i+1].v; tri[2].lu=A[i+1].lu; tri[2].lv=A[i+1].lv; tri[2].light=0;
-        int n = cron_clip_near(tri, clipped);
-        for (int j = 0; j < n; j++) accel_to_screen(&g_batch[j], &clipped[j]);
-        if (n) cron_polys(mode, g_batch, n, 0, -1);
+        batch[bn++] = W[0];
+        batch[bn++] = W[i];
+        batch[bn++] = W[i+1];
     }
+    if (bn) cron_xform_polys(mode, batch, bn, 0, -1);
 }
 
 /* ---- alias models (monsters / items / weapon) ------------------------- */
@@ -565,6 +570,7 @@ static void accel_brush(entity_t* ent) {
         M.m[3]=ent->origin[0]; M.m[7]=ent->origin[1]; M.m[11]=ent->origin[2];
     }
     cron_mat_mul(&mvpm, &g_mvp, &M);
+    cron_mvp(mvpm.m);   /* host-side T&L uses this for cron_xform_polys */
 
     /* view origin in model space, for the front-facing test (translation only;
      * the z-buffer covers the rare rotated bmodel). */
@@ -579,8 +585,9 @@ static void accel_brush(entity_t* ent) {
                   + modelorg[2]*pl->normal[2] - pl->dist;
         int wantback = (dot < 0.0f) ? SURF_PLANEBACK : 0;
         if ((surf->flags & SURF_PLANEBACK) != wantback) continue;
-        accel_surface(model, surf, &mvpm);
+        accel_surface(model, surf);
     }
+    cron_mvp(g_mvp.m);   /* restore the world MVP for downstream calls */
 }
 
 /* ---- sprites (explosions, flames, ...) -------------------------------- */
@@ -738,7 +745,7 @@ static void accel_node(mnode_t* node) {
     for (; c > 0; c--, surf++) {
         if (surf->visframe != r_framecount) continue;
         if ((surf->flags & SURF_PLANEBACK) != wantback) continue;
-        accel_surface(cl.worldmodel, surf, &g_mvp);
+        accel_surface(cl.worldmodel, surf);
     }
 
     accel_node(node->children[!side]);
@@ -772,6 +779,7 @@ void R_AccelDrawing(void) {
 
     accel_setup_view();
     accel_extract_frustum();
+    cron_mvp(g_mvp.m);   /* world MVP for the BSP walk; brush ents rebind */
     currententity = &cl_entities[0];   /* R_TextureAnimation reads its frame */
     accel_node(cl.worldmodel->nodes);
 
