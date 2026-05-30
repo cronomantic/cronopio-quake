@@ -42,6 +42,12 @@ echo "[build] syncing Cronopio tools + host with the current VM..."
 ninja -C "$CRBUILD" cronopio-cc cronopio cronopio-headless || {
   echo "[build] ERROR: building Cronopio tools failed." >&2; exit 1; }
 
+# Build picolibc.bc — the C library. Quake keeps picolibc's canonical malloc
+# (no --no-malloc); cron_sys.c supplies the sbrk machine port + errno.
+echo "[build] building picolibc.bc (C library)..."
+bash "$RT/build_picolibc.sh" || {
+  echo "[build] ERROR: build_picolibc.sh failed." >&2; exit 1; }
+
 OUT="${2:-$ROOT/quake.crom}"
 
 # --- PAK source ------------------------------------------------------------
@@ -180,7 +186,8 @@ PORT=(
   "$ROOT/src/r_accel_cron.c"    # accelerated 3D path (cron_polys); r_accel toggles it
   "$ROOT/src/snd_cron.c"        # SFX via cron_pcm (codecs dropped)
   "$ROOT/src/net_stub_cron.c"   # single-player: net_loop kept, rest stubbed
-  "$SDK/lib/cvm_libc.c"
+  "$SDK/lib/cron_sys.c"
+  "$RT/picolibc.bc"
 )
 
 echo "[build] $(( ${#SOURCES[@]} + ${#PORT[@]} )) translation units -> $OUT"
