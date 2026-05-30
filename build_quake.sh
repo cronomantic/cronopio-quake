@@ -44,8 +44,8 @@ ninja -C "$CRBUILD" cronopio-cc cronopio cronopio-headless || {
 
 # Build picolibc.bc — the C library. Quake keeps picolibc's canonical malloc
 # (no --no-malloc); cron_sys.c supplies the sbrk machine port + errno.
-echo "[build] building picolibc.bc (C library)..."
-bash "$RT/build_picolibc.sh" || {
+echo "[build] building picolibc.bc (C library, --with-stdio)..."
+bash "$RT/build_picolibc.sh" --with-stdio || {
   echo "[build] ERROR: build_picolibc.sh failed." >&2; exit 1; }
 
 OUT="${2:-$ROOT/quake.crom}"
