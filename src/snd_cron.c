@@ -148,19 +148,19 @@ static int   s_track;        /* current track number, 0 = none */
 static void bgm_load(int track, int looping) {
     char name[64];
     if (track < 2) {            /* track 1 is the data track — never music */
-        cron_music_stop();
+        cron_ogg_stop();
         s_track = 0;
         return;
     }
     snprintf(name, sizeof(name), "music/track%02d.ogg", track);
     byte* data = COM_LoadTempFile(name);   /* NULL if absent; host copies bytes */
     if (!data) {
-        cron_music_stop();
+        cron_ogg_stop();
         s_track = 0;
         return;
     }
-    cron_music(data, com_filesize, looping ? 1 : 0);
-    cron_music_volume((int)(bgmvolume.value * 256.0f));
+    cron_ogg_play(data, com_filesize, looping ? 1 : 0);
+    cron_ogg_volume((int)(bgmvolume.value * 256.0f));
     s_track = track;
 }
 
@@ -168,18 +168,18 @@ i32  BGMusic_Init(void) { return 1; }
 
 void BGMusic_Play(byte track, qboolean looping) { bgm_load((int)track, looping); }
 
-void BGMusic_Stop(void) { cron_music_stop(); s_track = 0; }
+void BGMusic_Stop(void) { cron_ogg_stop(); s_track = 0; }
 
 /* Pause/Resume fire on menu/console toggles; keep the music playing under them
  * (no host-side pause yet — tracking position would need a new syscall). */
 void BGMusic_Pause(void)  { }
 void BGMusic_Resume(void) { }
 
-void BGMusic_Shutdown(void) { cron_music_stop(); }
+void BGMusic_Shutdown(void) { cron_ogg_stop(); }
 
 /* Push the menu's bgmvolume slider to the host each tick (cheap). */
 void BGMusic_Update(void) {
     if (s_track) {
-        cron_music_volume((int)(bgmvolume.value * 256.0f));
+        cron_ogg_volume((int)(bgmvolume.value * 256.0f));
     }
 }
