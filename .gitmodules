@@ -4,4 +4,4 @@
 [submodule "third_party/chocolate-quake"]
 	path = third_party/chocolate-quake
 	url = https://github.com/cronomantic/chocolate-quake.git
-	branch = cronopio-port
+	branch = main

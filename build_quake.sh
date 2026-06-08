@@ -152,9 +152,7 @@ KEEP=(
   crc/crc
   host/host host/host_cmd
   input/keys
-  mathlib/mathlib
   memory/zone
-  menu/menu
   model/model
   net/net_main net/net_loop net/net_poll net/net_socket net/net_vcr
   progs/pr_cmds progs/pr_edict progs/pr_exec
@@ -162,13 +160,26 @@ KEEP=(
   renderer/d_part renderer/d_polyse renderer/d_scan renderer/d_sky renderer/d_sprite
   renderer/d_surf renderer/d_vars renderer/d_zpoint renderer/nonintel
   renderer/r_aclip renderer/r_alias renderer/r_bsp renderer/r_draw renderer/r_edge
-  renderer/r_efrag renderer/r_light renderer/r_main renderer/r_misc renderer/r_part
+  renderer/r_efrag renderer/r_light
   renderer/r_sky renderer/r_sprite renderer/r_surf renderer/r_vars
   screen/screen
   server/sv_main server/sv_move server/sv_phys server/sv_user server/sv_world
-  sound/snd_dma sound/snd_mix sound/snd_mem
+  sound/snd_dma sound/snd_mem
   status_bar/sbar
   wad/wad
+)
+# [cronopio] These upstream TUs carry our engine adaptations (accel-render hooks,
+# particle split, the f64/sqrt + math.h trivia, the new-game non-blocking menu).
+# To keep the submodule PURE UPSTREAM (easy `git submodule update` sync), they are
+# NOT compiled from the fork; instead compat/src/ holds copies with the changes
+# (the Exult compat/ibuf8.cc model). Re-sync these when upstream changes the file.
+COMPAT_OVERRIDES=(
+  "$ROOT/compat/src/mathlib.c"  # drop the conflicting double sqrt redeclaration
+  "$ROOT/compat/src/menu.c"     # non-blocking new-game + 3D-mode toggle messages
+  "$ROOT/compat/src/r_main.c"   # r_accel cvar + R_RenderView_ accel hook
+  "$ROOT/compat/src/r_misc.c"   # r_dowarp off in the accel path
+  "$ROOT/compat/src/r_part.c"   # split R_DrawParticles -> draw + R_UpdateParticles
+  "$ROOT/compat/src/snd_mix.c"  # <math.h> for the filtered resampler's sin/cos
 )
 
 SOURCES=()
@@ -190,7 +201,7 @@ PORT=(
   "$RT/picolibc.bc"
 )
 
-echo "[build] $(( ${#SOURCES[@]} + ${#PORT[@]} )) translation units -> $OUT"
+echo "[build] $(( ${#SOURCES[@]} + ${#COMPAT_OVERRIDES[@]} + ${#PORT[@]} )) translation units -> $OUT"
 echo "[build] PAK: $PAK"
 
 # Cartridge metadata (CVM_SEC_META): the host launcher shows these without
@@ -211,6 +222,7 @@ ROM_ARGS=()
   -DCVM_LIBC_ENABLE_F64 \
   "${INCS[@]}" \
   "${SOURCES[@]}" \
+  "${COMPAT_OVERRIDES[@]}" \
   "${PORT[@]}" \
   ${ROM_ARGS[@]+"${ROM_ARGS[@]}"} \
   --heap-reserve=96M \
